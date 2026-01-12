@@ -4,11 +4,13 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Lock, Copy, CheckCircle, AlertCircle } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Lock, Copy, CheckCircle, AlertCircle, Key } from "lucide-react";
 
 const encryptFormSchema = z.object({
   publicKey: z.string().min(1, "Public key is required"),
@@ -18,10 +20,10 @@ const encryptFormSchema = z.object({
 type EncryptFormData = z.infer<typeof encryptFormSchema>;
 
 export default function Home() {
-  const [encryptedResult, setEncryptedResult] = useState<string>("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string>("");
   const [copied, setCopied] = useState(false);
+  const [keySize, setKeySize] = useState<number>(2048);
+  const [privateKey, setPrivateKey] = useState<string>("");
+  const [copiedPrivateKey, setCopiedPrivateKey] = useState(false);
 
   const form = useForm<EncryptFormData>({
     resolver: zodResolver(encryptFormSchema),
@@ -31,12 +33,9 @@ export default function Home() {
     },
   });
 
-  const onSubmit = async (data: EncryptFormData) => {
-    setIsLoading(true);
-    setError("");
-    setEncryptedResult("");
-
-    try {
+  // Encrypt message mutation
+  const encryptMutation = useMutation({
+    mutationFn: async (data: EncryptFormData) => {
       const response = await fetch("/api", {
         method: "POST",
         headers: {
@@ -52,19 +51,45 @@ export default function Home() {
         throw new Error("Failed to encrypt message");
       }
 
-      const result = await response.json();
-      setEncryptedResult(result.encrypted);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
-    } finally {
-      setIsLoading(false);
-    }
+      return response.json();
+    },
+  });
+
+  // Generate key mutation
+  const generateKeyMutation = useMutation({
+    mutationFn: async (keySize: number) => {
+      const response = await fetch("/api/generate-key", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          keySize: keySize,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to generate RSA key");
+      }
+
+      return response.json();
+    },
+    onSuccess: (result) => {
+      // Set the public key content (without PEM markers) in the form
+      form.setValue("publicKey", result.publicKeyContent);
+      // Store the private key for display
+      setPrivateKey(result.privateKey);
+    },
+  });
+
+  const onSubmit = (data: EncryptFormData) => {
+    encryptMutation.mutate(data);
   };
 
   const copyToClipboard = async () => {
-    if (encryptedResult) {
+    if (encryptMutation.data?.encrypted) {
       try {
-        await navigator.clipboard.writeText(encryptedResult);
+        await navigator.clipboard.writeText(encryptMutation.data.encrypted);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       } catch (err) {
@@ -73,23 +98,43 @@ export default function Home() {
     }
   };
 
+  const copyPrivateKeyToClipboard = async () => {
+    if (privateKey) {
+      try {
+        await navigator.clipboard.writeText(privateKey);
+        setCopiedPrivateKey(true);
+        setTimeout(() => setCopiedPrivateKey(false), 2000);
+      } catch (err) {
+        console.error("Failed to copy private key to clipboard:", err);
+      }
+    }
+  };
+
+  const generateKey = () => {
+    generateKeyMutation.mutate(keySize);
+  };
+
+  // Get error from either mutation
+  const error = encryptMutation.error || generateKeyMutation.error;
+  const errorMessage = error instanceof Error ? error.message : error ? "An error occurred" : "";
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-      <div className="max-w-4xl mx-auto">
-        <div className="text-center mb-8">
-          <div className="flex items-center justify-center mb-4">
-            <Lock className="h-8 w-8 text-indigo-600 mr-3" />
-            <h1 className="text-4xl font-bold text-gray-900">Message Encryptor</h1>
+    <div className="bg-gradient-to-br from-blue-50 to-indigo-100 p-4 min-h-screen">
+      <div className="mx-auto max-w-4xl">
+        <div className="mb-8 text-center">
+          <div className="flex justify-center items-center mb-4">
+            <Lock className="mr-3 w-8 h-8 text-indigo-600" />
+            <h1 className="font-bold text-gray-900 text-4xl">Message Encryptor</h1>
           </div>
-          <p className="text-lg text-gray-600">
+          <p className="text-gray-600 text-lg">
             Encrypt your messages using RSA public key encryption
           </p>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="gap-8 grid grid-cols-1 lg:grid-cols-2">
           {/* Input Form */}
-          <div className="bg-white rounded-lg shadow-lg p-6">
-            <h2 className="text-2xl font-semibold text-gray-900 mb-6">Encrypt Message</h2>
+          <div className="bg-white shadow-lg p-6 rounded-lg">
+            <h2 className="mb-6 font-semibold text-gray-900 text-2xl">Encrypt Message</h2>
             
             <Form {...form}>
               <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
@@ -98,10 +143,49 @@ export default function Home() {
                   name="publicKey"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel className="text-base font-medium">Public Key</FormLabel>
+                      <div className="flex justify-between items-center mb-2">
+                        <FormLabel className="font-medium text-base">Public Key</FormLabel>
+                        <div className="flex items-center gap-2">
+                          <Select
+                            value={keySize.toString()}
+                            onValueChange={(value) => setKeySize(Number(value))}
+                            disabled={generateKeyMutation.isPending}
+                          >
+                            <SelectTrigger size="sm" className="w-[140px]">
+                              <SelectValue placeholder="Key size" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="1024">1024 bits</SelectItem>
+                              <SelectItem value="2048">2048 bits</SelectItem>
+                              <SelectItem value="3072">3072 bits</SelectItem>
+                              <SelectItem value="4096">4096 bits</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            type="button"
+                            onClick={generateKey}
+                            disabled={generateKeyMutation.isPending}
+                            variant="outline"
+                            size="sm"
+                            className="text-sm"
+                          >
+                            {generateKeyMutation.isPending ? (
+                              <div className="flex items-center">
+                                <div className="mr-2 border-gray-600 border-b-2 rounded-full w-3 h-3 animate-spin"></div>
+                                Generating...
+                              </div>
+                            ) : (
+                              <div className="flex items-center">
+                                <Key className="mr-1 w-3 h-3" />
+                                Generate Key
+                              </div>
+                            )}
+                          </Button>
+                        </div>
+                      </div>
                       <FormControl>
                         <Textarea
-                          placeholder="Enter your RSA public key content (without BEGIN/END markers)"
+                          placeholder="Enter your RSA public key content (without BEGIN/END markers) or click 'Generate Key' to create a new one"
                           className="min-h-[120px] font-mono text-sm"
                           {...field}
                         />
@@ -116,7 +200,7 @@ export default function Home() {
                   name="message"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel className="text-base font-medium">Message to Encrypt</FormLabel>
+                      <FormLabel className="font-medium text-base">Message to Encrypt</FormLabel>
                       <FormControl>
                         <Textarea
                           placeholder="Enter the message you want to encrypt"
@@ -131,17 +215,17 @@ export default function Home() {
 
                 <Button
                   type="submit"
-                  disabled={isLoading}
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3"
+                  disabled={encryptMutation.isPending}
+                  className="bg-indigo-600 hover:bg-indigo-700 py-3 w-full text-white"
                 >
-                  {isLoading ? (
+                  {encryptMutation.isPending ? (
                     <div className="flex items-center">
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                      <div className="mr-2 border-white border-b-2 rounded-full w-4 h-4 animate-spin"></div>
                       Encrypting...
                     </div>
                   ) : (
                     <div className="flex items-center">
-                      <Lock className="h-4 w-4 mr-2" />
+                      <Lock className="mr-2 w-4 h-4" />
                       Encrypt Message
                     </div>
                   )}
@@ -149,61 +233,104 @@ export default function Home() {
               </form>
             </Form>
 
-            {error && (
-              <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+            {errorMessage && (
+              <div className="bg-red-50 mt-4 p-4 border border-red-200 rounded-lg">
                 <div className="flex items-center">
-                  <AlertCircle className="h-5 w-5 text-red-500 mr-2" />
-                  <span className="text-red-700">{error}</span>
+                  <AlertCircle className="mr-2 w-5 h-5 text-red-500" />
+                  <span className="text-red-700">{errorMessage}</span>
                 </div>
               </div>
             )}
           </div>
 
           {/* Result Display */}
-          <div className="bg-white rounded-lg shadow-lg p-6">
-            <h2 className="text-2xl font-semibold text-gray-900 mb-6">Encrypted Result</h2>
-            
-            {encryptedResult ? (
-              <div className="space-y-4">
-                <div className="relative">
-                  <Label className="text-sm font-medium text-gray-700 mb-2 block">
-                    Encrypted Message
-                  </Label>
+          <div className="space-y-6 bg-white shadow-lg p-6 rounded-lg">
+            <div>
+              <h2 className="mb-6 font-semibold text-gray-900 text-2xl">Encrypted Result</h2>
+              
+              {encryptMutation.data?.encrypted ? (
+                <div className="space-y-4">
                   <div className="relative">
-                    <Textarea
-                      value={encryptedResult}
-                      readOnly
-                      className="min-h-[200px] font-mono text-sm bg-gray-50"
-                    />
-                    <Button
-                      onClick={copyToClipboard}
-                      variant="outline"
-                      size="sm"
-                      className="absolute top-2 right-2"
-                    >
-                      {copied ? (
-                        <CheckCircle className="h-4 w-4 text-green-600" />
-                      ) : (
-                        <Copy className="h-4 w-4" />
-                      )}
-                    </Button>
+                    <Label className="block mb-2 font-medium text-gray-700 text-sm">
+                      Encrypted Message
+                    </Label>
+                    <div className="relative">
+                      <Textarea
+                        value={encryptMutation.data.encrypted}
+                        readOnly
+                        className="bg-gray-50 min-h-[200px] font-mono text-sm"
+                      />
+                      <Button
+                        onClick={copyToClipboard}
+                        variant="outline"
+                        size="sm"
+                        className="top-2 right-2 absolute"
+                      >
+                        {copied ? (
+                          <CheckCircle className="w-4 h-4 text-green-600" />
+                        ) : (
+                          <Copy className="w-4 h-4" />
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-green-50 p-4 border border-green-200 rounded-lg">
+                    <div className="flex items-center">
+                      <CheckCircle className="mr-2 w-5 h-5 text-green-500" />
+                      <span className="font-medium text-green-700">
+                        Message encrypted successfully!
+                      </span>
+                    </div>
                   </div>
                 </div>
-                
-                <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
-                  <div className="flex items-center">
-                    <CheckCircle className="h-5 w-5 text-green-500 mr-2" />
-                    <span className="text-green-700 font-medium">
-                      Message encrypted successfully!
-                    </span>
+              ) : (
+                <div className="flex justify-center items-center h-[200px] text-gray-500">
+                  <div className="text-center">
+                    <Lock className="mx-auto mb-4 w-12 h-12 text-gray-300" />
+                    <p>Encrypted result will appear here</p>
                   </div>
                 </div>
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-[200px] text-gray-500">
-                <div className="text-center">
-                  <Lock className="h-12 w-12 mx-auto mb-4 text-gray-300" />
-                  <p>Encrypted result will appear here</p>
+              )}
+            </div>
+
+            {privateKey && (
+              <div className="pt-6 border-gray-200 border-t">
+                <h2 className="mb-6 font-semibold text-gray-900 text-2xl">Generated Private Key</h2>
+                <div className="space-y-4">
+                  <div className="relative">
+                    <Label className="block mb-2 font-medium text-gray-700 text-sm">
+                      Private Key
+                    </Label>
+                    <div className="relative">
+                      <Textarea
+                        value={privateKey}
+                        readOnly
+                        className="bg-gray-50 min-h-[200px] font-mono text-sm"
+                      />
+                      <Button
+                        onClick={copyPrivateKeyToClipboard}
+                        variant="outline"
+                        size="sm"
+                        className="top-2 right-2 absolute"
+                      >
+                        {copiedPrivateKey ? (
+                          <CheckCircle className="w-4 h-4 text-green-600" />
+                        ) : (
+                          <Copy className="w-4 h-4" />
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-amber-50 p-4 border border-amber-200 rounded-lg">
+                    <div className="flex items-center">
+                      <AlertCircle className="mr-2 w-5 h-5 text-amber-600" />
+                      <span className="font-medium text-amber-700">
+                        ⚠️ Keep your private key secure! Never share it with anyone.
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
@@ -211,33 +338,33 @@ export default function Home() {
         </div>
 
         {/* Instructions */}
-        <div className="mt-8 bg-white rounded-lg shadow-lg p-6">
-          <h3 className="text-xl font-semibold text-gray-900 mb-4">How to Use</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-white shadow-lg mt-8 p-6 rounded-lg">
+          <h3 className="mb-4 font-semibold text-gray-900 text-xl">How to Use</h3>
+          <div className="gap-6 grid grid-cols-1 md:grid-cols-3">
             <div className="text-center">
-              <div className="bg-indigo-100 rounded-full w-12 h-12 flex items-center justify-center mx-auto mb-3">
-                <span className="text-indigo-600 font-bold">1</span>
+              <div className="flex justify-center items-center bg-indigo-100 mx-auto mb-3 rounded-full w-12 h-12">
+                <span className="font-bold text-indigo-600">1</span>
               </div>
-              <h4 className="font-medium text-gray-900 mb-2">Enter Public Key</h4>
-              <p className="text-sm text-gray-600">
+              <h4 className="mb-2 font-medium text-gray-900">Enter Public Key</h4>
+              <p className="text-gray-600 text-sm">
                 Paste your RSA public key content (the API will automatically add the PEM wrapper)
               </p>
             </div>
             <div className="text-center">
-              <div className="bg-indigo-100 rounded-full w-12 h-12 flex items-center justify-center mx-auto mb-3">
-                <span className="text-indigo-600 font-bold">2</span>
+              <div className="flex justify-center items-center bg-indigo-100 mx-auto mb-3 rounded-full w-12 h-12">
+                <span className="font-bold text-indigo-600">2</span>
               </div>
-              <h4 className="font-medium text-gray-900 mb-2">Write Message</h4>
-              <p className="text-sm text-gray-600">
+              <h4 className="mb-2 font-medium text-gray-900">Write Message</h4>
+              <p className="text-gray-600 text-sm">
                 Enter the message you want to encrypt. This will be encrypted using the public key.
               </p>
             </div>
             <div className="text-center">
-              <div className="bg-indigo-100 rounded-full w-12 h-12 flex items-center justify-center mx-auto mb-3">
-                <span className="text-indigo-600 font-bold">3</span>
+              <div className="flex justify-center items-center bg-indigo-100 mx-auto mb-3 rounded-full w-12 h-12">
+                <span className="font-bold text-indigo-600">3</span>
               </div>
-              <h4 className="font-medium text-gray-900 mb-2">Get Result</h4>
-              <p className="text-sm text-gray-600">
+              <h4 className="mb-2 font-medium text-gray-900">Get Result</h4>
+              <p className="text-gray-600 text-sm">
                 Click &quot;Encrypt Message&quot; to get your encrypted result. You can copy it to clipboard.
               </p>
             </div>
